@@ -51,6 +51,15 @@
     .controls {
       margin-top: 20px;
     }
+    .controls input,
+    .controls select {
+      width: 100px;
+      margin-right: 10px;
+    }
+    .controls label {
+      margin-right: 20px;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
@@ -60,23 +69,23 @@
     <label>Set Inlet Pressure (psi):
       <input type="number" id="pressure-input" value="10000" step="100">
     </label>
-    <label>Choke Size (in):
-      <select id="choke-size">
-        <option value="0.125">1/8</option>
-        <option value="0.25">1/4</option>
-        <option value="0.375">3/8</option>
-        <option value="0.5">1/2</option>
-        <option value="0.625">5/8</option>
-        <option value="0.75">3/4</option>
-        <option value="1.0">1.0</option>
-      </select>
+    <label>Set Upstream Flow (BPD):
+      <input type="number" id="upstream-flow" value="5000" step="100">
     </label>
-    <label>Heater Temperature (°C):
-      <input type="number" id="heater-temp" value="60" step="1">
+    <label>Choke Size (in):
+      <input type="text" id="choke-size" value="1/2">
+    </label>
+    <label>Upstream Temp (°F):
+      <input type="number" id="upstream-temp" value="80" step="1">
+    </label>
+    <label>Heater Temp (°F):
+      <input type="number" id="heater-temp" value="120" step="1">
     </label>
     <div id="output-stats"></div>
+    <div id="alert-box" style="color:red; font-weight:bold; margin-top: 10px;"></div>
   </div>
 
+  
   <svg width="1200" height="600" id="wellhead-diagram">
     <!-- Flow paths -->
     <line id="flow-v1-v2" x1="200" y1="350" x2="200" y2="200" class="flow-path" visibility="hidden" />
@@ -112,8 +121,10 @@
     <text x="365" y="175" text-anchor="middle">V2</text>
     <rect id="v3" x="180" y="20" width="40" height="30" class="valve" />
     <text x="200" y="15" text-anchor="middle">V3</text>
+    <text x="230" y="35" text-anchor="start" font-size="12" fill="black">Swab Valve</text>
     <rect id="v4" x="20" y="180" width="30" height="40" class="valve" />
     <text x="35" y="175" text-anchor="middle">V4</text>
+    <text x="35" y="160" text-anchor="middle" font-size="12" fill="black">Kill Valve</text>
 
     <rect id="v5" x="460" y="180" width="40" height="40" class="valve" />
     <text x="480" y="175" text-anchor="middle">SSDV</text>
@@ -126,6 +137,8 @@
     <text x="575" y="245" text-anchor="middle">V8</text>
     <rect id="v9" x="620" y="210" width="30" height="20" class="valve" />
     <text x="635" y="245" text-anchor="middle">V9</text>
+    <text x="605" y="275" text-anchor="middle" font-size="12" fill="black">Fixed Choke</text>
+
 
     <rect id="v10" x="770" y="180" width="30" height="20" class="valve" />
     <text x="785" y="175" text-anchor="middle">V10</text>
@@ -135,6 +148,8 @@
     <text x="815" y="175" text-anchor="middle">V12</text>
     <rect id="v13" x="800" y="210" width="30" height="20" class="valve" />
     <text x="815" y="245" text-anchor="middle">V13</text>
+    <text x="805" y="275" text-anchor="middle" font-size="12" fill="black">Bypass to Separator</text>
+
 
     <!-- Gauges -->
     <circle cx="880" cy="200" r="30" stroke="black" stroke-width="2" fill="white" />
@@ -142,100 +157,205 @@
     <text id="temp-label" x="880" y="240" text-anchor="middle" class="temperature-text" visibility="hidden">0°C</text>
   </svg>
 
-  <script>
-    const valves = {};
-    ['v1','v2','v3','v4','v5','v6','v7','v8','v9','v10','v11','v12','v13'].forEach(id => {
-      valves[id] = document.getElementById(id);
-    });
+<script>
+  const valves = {};
+  ['v1','v2','v3','v4','v5','v6','v7','v8','v9','v10','v11','v12','v13'].forEach(id => {
+    valves[id] = document.getElementById(id);
+  });
 
-    const flows = {};
-    ['v1-center','v1-v2','v2-h','v5','v3','v4-h','v6','v7','out','v8','v9','fixed-out','v10','v11','v12','v13'].forEach(f => {
-      flows['flow-' + f] = document.getElementById('flow-' + f);
-    });
+  const flows = {};
+  ['v1-center','v1-v2','v2-h','v5','v3','v4-h','v6','v7','out','v8','v9','fixed-out','v10','v11','v12','v13'].forEach(f => {
+    flows['flow-' + f] = document.getElementById('flow-' + f);
+  });
 
-    function updateFlowVisibility() {
-      const open = id => valves[id].classList.contains('open');
-      const baseFlow = open('v1') && (open('v2') || open('v3') || open('v4'));
-      const standbyFlow = open('v1') && !open('v2') && !open('v3') && !open('v4');
-      flows['flow-v1-center'].setAttribute('visibility', standbyFlow ? 'visible' : 'hidden');
+  let currentOutputTemp = parseFloat(document.getElementById('upstream-temp').value);
+  let tempInterval = null;
+  let pressureInterval = null;
+  let flowInterval = null;
 
-      flows['flow-v1-v2'].setAttribute('visibility', baseFlow ? 'visible' : 'hidden');
-      flows['flow-v2-h'].setAttribute('visibility', open('v1') && open('v2') ? 'visible' : 'hidden');
-      flows['flow-v5'].setAttribute('visibility', open('v1') && open('v2') && open('v5') ? 'visible' : 'hidden');
-      flows['flow-v3'].setAttribute('visibility', open('v1') && open('v3') ? 'visible' : 'hidden');
-      flows['flow-v4-h'].setAttribute('visibility', open('v1') && open('v4') ? 'visible' : 'hidden');
+  function updateFlowVisibility() {
+    const open = id => valves[id].classList.contains('open');
+    const baseFlow = open('v1') && open('v2');
+    const standbyFlow = open('v1') && !open('v2') && !open('v3') && !open('v4');
+    flows['flow-v1-center'].setAttribute('visibility', standbyFlow ? 'visible' : 'hidden');
 
-      const adjChoke = open('v6') && open('v7') && !open('v8') && !open('v9');
-      const fixedChoke = open('v8') && open('v9') && !open('v6') && !open('v7');
+    flows['flow-v1-v2'].setAttribute('visibility', baseFlow ? 'visible' : 'hidden');
+    flows['flow-v2-h'].setAttribute('visibility', open('v1') && open('v2') ? 'visible' : 'hidden');
+    flows['flow-v5'].setAttribute('visibility', open('v1') && open('v2') && open('v5') ? 'visible' : 'hidden');
+    flows['flow-v3'].setAttribute('visibility', open('v1') && open('v3') ? 'visible' : 'hidden');
+    flows['flow-v4-h'].setAttribute('visibility', open('v1') && open('v4') ? 'visible' : 'hidden');
 
-      flows['flow-v6'].setAttribute('visibility', open('v5') && open('v6') ? 'visible' : 'hidden');
-      flows['flow-v7'].setAttribute('visibility', open('v5') && open('v6') && open('v7') ? 'visible' : 'hidden');
-      flows['flow-out'].setAttribute('visibility', adjChoke ? 'visible' : 'hidden');
+    const adjChoke = open('v6') && open('v7') && !open('v8') && !open('v9');
+    const fixedChoke = open('v8') && open('v9') && !open('v6') && !open('v7');
 
-      flows['flow-v8'].setAttribute('visibility', open('v5') && open('v8') ? 'visible' : 'hidden');
-      flows['flow-v9'].setAttribute('visibility', open('v5') && open('v8') && open('v9') ? 'visible' : 'hidden');
-      flows['flow-fixed-out'].setAttribute('visibility', fixedChoke ? 'visible' : 'hidden');
+    flows['flow-v6'].setAttribute('visibility', open('v5') && open('v6') ? 'visible' : 'hidden');
+    flows['flow-v7'].setAttribute('visibility', open('v5') && open('v6') && open('v7') ? 'visible' : 'hidden');
+    flows['flow-out'].setAttribute('visibility', adjChoke ? 'visible' : 'hidden');
 
-      const heaterIn = open('v7') || open('v9');
-      flows['flow-v10'].setAttribute('visibility', heaterIn && open('v10') ? 'visible' : 'hidden');
-      flows['flow-v11'].setAttribute('visibility', heaterIn && open('v11') ? 'visible' : 'hidden');
-      flows['flow-v12'].setAttribute('visibility', open('v10') && open('v12') ? 'visible' : 'hidden');
-      flows['flow-v13'].setAttribute('visibility', open('v11') && open('v13') ? 'visible' : 'hidden');
+    flows['flow-v8'].setAttribute('visibility', open('v5') && open('v8') ? 'visible' : 'hidden');
+    flows['flow-v9'].setAttribute('visibility', open('v5') && open('v8') && open('v9') ? 'visible' : 'hidden');
+    flows['flow-fixed-out'].setAttribute('visibility', fixedChoke ? 'visible' : 'hidden');
 
-      const showGauges = (adjChoke || fixedChoke || open('v12') || open('v13'));
-      document.getElementById('gauge-label').setAttribute('visibility', showGauges ? 'visible' : 'hidden');
-      document.getElementById('temp-label').setAttribute('visibility', showGauges ? 'visible' : 'hidden');
+    const heaterIn = open('v7') || open('v9');
+    flows['flow-v10'].setAttribute('visibility', heaterIn && open('v10') ? 'visible' : 'hidden');
+    flows['flow-v11'].setAttribute('visibility', heaterIn && open('v11') ? 'visible' : 'hidden');
+    flows['flow-v12'].setAttribute('visibility', open('v10') && open('v12') ? 'visible' : 'hidden');
+    flows['flow-v13'].setAttribute('visibility', open('v11') && open('v13') ? 'visible' : 'hidden');
 
-      if (!open('v5')) {
-        ['v6','v7','out','v8','v9','fixed-out','v10','v11','v12','v13'].forEach(f => {
-          flows['flow-' + f].setAttribute('visibility', 'hidden');
-        });
-        document.getElementById('gauge-label').setAttribute('visibility', 'hidden');
-        document.getElementById('temp-label').setAttribute('visibility', 'hidden');
-      }
-    }
+    const showGauges = (adjChoke || fixedChoke || open('v12') || open('v13'));
+    document.getElementById('gauge-label').setAttribute('visibility', showGauges ? 'visible' : 'hidden');
+    document.getElementById('temp-label').setAttribute('visibility', showGauges ? 'visible' : 'hidden');
 
-    function updateOutput() {
-      const pressure = parseFloat(document.getElementById('pressure-input').value);
-      const choke = parseFloat(document.getElementById('choke-size').value);
-      const heaterC = parseFloat(document.getElementById('heater-temp').value);
-
-      if (!valves['v5'].classList.contains('open')) {
-        document.getElementById('output-stats').innerHTML =
-          `<span style="color:red">SSDV Closed — Output Blocked</span>`;
-        document.getElementById('gauge-label').textContent = `0 psi`;
-        document.getElementById('temp-label').textContent = `0°C`;
-        return;
-      }
-
-      const flowRate = ((Math.PI / 4) * choke ** 2 * Math.sqrt(2 * pressure / 1000)).toFixed(3);
-      const outPressure = (pressure * (choke / 1.0)).toFixed(2);
-
-      const usingHeater = valves['v10'].classList.contains('open') && valves['v12'].classList.contains('open');
-      const baseTemp = (pressure * 0.01 + flowRate * 100);
-      const tempC = usingHeater ? (baseTemp + heaterC) : baseTemp;
-      const temperature = tempC.toFixed(1);
-
-      document.getElementById('output-stats').innerHTML =
-        `Flow Rate: ${flowRate} m³/s<br>Output Pressure: ${outPressure} psi<br>Temperature: ${temperature}°C`;
-      document.getElementById('gauge-label').textContent = `${outPressure} psi`;
-      document.getElementById('temp-label').textContent = `${temperature}°C`;
-    }
-
-    Object.keys(valves).forEach(id => {
-      valves[id].addEventListener('click', () => {
-        valves[id].classList.toggle('open');
-        updateFlowVisibility();
-        updateOutput();
+    if (!open('v5')) {
+      ['v6','v7','out','v8','v9','fixed-out','v10','v11','v12','v13'].forEach(f => {
+        flows['flow-' + f].setAttribute('visibility', 'hidden');
       });
+      document.getElementById('gauge-label').setAttribute('visibility', 'hidden');
+      document.getElementById('temp-label').setAttribute('visibility', 'hidden');
+    }
+  }
+
+  function animateTemperature(targetTemp) {
+    if (tempInterval) clearInterval(tempInterval);
+    tempInterval = setInterval(() => {
+      const step = 1;
+      if (Math.abs(currentOutputTemp - targetTemp) < step) {
+        currentOutputTemp = targetTemp;
+        clearInterval(tempInterval);
+      } else {
+        currentOutputTemp += currentOutputTemp < targetTemp ? step : -step;
+      }
+      updateDisplay();
+    }, 100);
+  }
+
+  function parseFraction(input) {
+    if (input.includes('/')) {
+      const [num, denom] = input.split('/');
+      return parseFloat(num) / parseFloat(denom);
+    }
+    return parseFloat(input);
+  }
+
+  function updateDisplay() {
+    const pressure = parseFloat(document.getElementById('pressure-input').value);
+    const choke = parseFraction(document.getElementById('choke-size').value);
+    const upstreamBPD = parseFloat(document.getElementById('upstream-flow').value);
+   
+  let flowBPD = upstreamBPD;
+  let outPressure = pressure;
+
+  const adjChokeOpen = valves['v6'].classList.contains('open') && valves['v7'].classList.contains('open');
+  const fixedChokeOpen = valves['v8'].classList.contains('open') && valves['v9'].classList.contains('open');
+
+  if (adjChokeOpen || fixedChokeOpen) {
+    flowBPD *= (choke / 1.0);
+    outPressure = (pressure * (choke / 1.0)).toFixed(2);
+  }
+
+    document.getElementById('output-stats').innerHTML =
+      `Flow Rate: ${flowBPD.toFixed(1)} BPD<br>Output Pressure: ${outPressure} psi<br>Temperature: ${currentOutputTemp.toFixed(1)}°F`;
+    document.getElementById('gauge-label').textContent = `${outPressure} psi`;
+    document.getElementById('temp-label').textContent = `${currentOutputTemp.toFixed(1)}°F`;
+  }
+
+  function updateOutput() {
+    const upstreamF = parseFloat(document.getElementById('upstream-temp').value);
+    const heaterF = parseFloat(document.getElementById('heater-temp').value);
+    const usingHeater = valves['v10'].classList.contains('open') && valves['v12'].classList.contains('open');
+    const isSSDVOpen = valves['v5'].classList.contains('open');
+    const killOpen = valves['v4'].classList.contains('open');
+    const swabOpen = valves['v3'].classList.contains('open');
+    const v1Open = valves['v1'].classList.contains('open');
+
+    const pressureInput = document.getElementById('pressure-input');
+    const flowInput = document.getElementById('upstream-flow');
+    let pressure = parseFloat(pressureInput.value);
+    let flow = parseFloat(flowInput.value);
+    const alertBox = document.getElementById('alert-box');
+
+    if (!isSSDVOpen) {
+      document.getElementById('output-stats').innerHTML =
+        `<span style="color:red">SSDV Closed — Output Blocked</span>`;
+      document.getElementById('gauge-label').textContent = `0 psi`;
+      document.getElementById('temp-label').textContent = `0°F`;
+      clearInterval(tempInterval);
+      return;
+    }
+
+    // Gradual pressure drop with V4 (Kill Valve)
+    if (v1Open && killOpen && pressure > 5000) {
+      if (pressureInterval) clearInterval(pressureInterval);
+      const targetPressure = 3000;
+      const steps = 10;
+      const stepSize = (pressure - targetPressure) / steps;
+      let count = 0;
+      pressureInterval = setInterval(() => {
+        pressure -= stepSize;
+        pressureInput.value = pressure.toFixed(0);
+        updateDisplay();
+        count++;
+        if (count >= steps) {
+          clearInterval(pressureInterval);
+          pressure = targetPressure;
+          pressureInput.value = pressure.toFixed(0);
+          updateDisplay();
+        }
+      }, 1000);
+    }
+
+    // Gradual flow ramp-up with V3 (Swab Valve)
+    if (v1Open && swabOpen && flow < 3000) {
+      if (flowInterval) clearInterval(flowInterval);
+      const targetFlow = 3000;
+      const steps = 10;
+      const stepSize = targetFlow / steps;
+      let count = 0;
+      flow = 0;
+      flowInput.value = flow;
+      flowInterval = setInterval(() => {
+        flow += stepSize;
+        flowInput.value = flow.toFixed(0);
+        updateDisplay();
+        count++;
+        if (count >= steps) {
+          clearInterval(flowInterval);
+          flow = targetFlow;
+          flowInput.value = flow.toFixed(0);
+          updateDisplay();
+        }
+      }, 1000);
+    }
+
+    // Alert logic
+    if (v1Open && pressure > 12000 && !killOpen) {
+      alertBox.textContent = '⚠️ Overpressure — Reduce pressure!';
+    } else if (v1Open && flow <= 500 && !swabOpen) {
+      alertBox.textContent = '⚠️ No flow — Initiate flow!';
+    } else {
+      alertBox.textContent = '';
+    }
+
+    const targetTemp = usingHeater ? heaterF : upstreamF;
+    animateTemperature(targetTemp);
+  }
+
+  Object.keys(valves).forEach(id => {
+    valves[id].addEventListener('click', () => {
+      valves[id].classList.toggle('open');
+      updateFlowVisibility();
+      updateOutput();
     });
+  });
 
-    document.getElementById('pressure-input').addEventListener('input', updateOutput);
-    document.getElementById('choke-size').addEventListener('change', updateOutput);
-    document.getElementById('heater-temp').addEventListener('input', updateOutput);
+  ['pressure-input', 'choke-size', 'heater-temp', 'upstream-temp'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateOutput);
+  });
 
-    updateOutput();
-    updateFlowVisibility();
-  </script>
+  document.getElementById('upstream-flow').addEventListener('input', updateOutput);
+
+  updateOutput();
+  updateFlowVisibility();
+</script>
 </body>
 </html>
